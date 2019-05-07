@@ -26,6 +26,7 @@ from django.views.generic.edit import CreateView, FormView
 from elasticsearch_dsl import Q
 from elasticsearch_dsl.utils import AttrList
 
+from .facets import TermsFacet, RangeFilter, TextFacet
 from .mapping import DEFAULT_ANALYZER
 from .signals import advanced_search_performed, search_complete
 from .templatetags.seeker import seeker_format
@@ -1241,10 +1242,55 @@ class AdvancedSeekerView(SeekerView):
             return self.render_results(export)
         else:
             return HttpResponseBadRequest("This endpoint only accepts AJAX requests.")
+        
+    def initial_facet_query(self):
+        facets = {}
+        # Iterate over each facet
+        if 'condition' in self.initial_facets.keys():
+            fake_query = {'condition': self.initial_facets['condition'], 'rules': []}
+        else:
+            fake_query = {'condition': 'AND', 'rules': [] }
+        for fake_facet in self.initial_facets:
+            for real_facet in self.get_facets():
+                if fake_facet == real_facet.field:
+                    self.search_object.setdefault('selected_facets',[]).append(real_facet.field)
+                    if isinstance(real_facet, TermsFacet):
+                        facet_query = {'condition': real_facet.filter_operator.upper(), 'rules': []}
+                        if self.initial_facets[fake_facet]:
+                            for val in self.initial_facets[fake_facet]:
+                                rule = {
+                                    'id': real_facet.field,
+                                    'operator': 'equal',
+                                    'value': val}
+                                facet_query['rules'].append(rule)
+                            fake_query['rules'].append(facet_query)
+                    elif isinstance(real_facet, RangeFilter):
+                        if self.initial_facets[fake_facet]:
+                            if 'operator' in self.initial_facets[fake_facet].keys():
+                                operator = self.initial_facets[fake_facet].pop('operator')
+                            else:
+                                operator = 'between'
+                            rule = {
+                                'id': real_facet.field,
+                                'operator': operator,
+                                'value': self.initial_facets[fake_facet]}
+                            fake_query['rules'].append(rule)
+                    elif isinstance(real_facet, TextFacet):
+                        if self.initial_facets[fake_facet]:
+                            facet_query = {'condition': 'OR',
+                                           'rules': [{
+                                               'id': real_facet.field,
+                                               'operator': 'equal',
+                                               'value': self.initial_facets[fake_facet]}]}
+                            fake_query['rules'].append(facet_query)
+        return fake_query
 
     def render_results(self, export):
         facet_lookup = { facet.field: facet for facet in self.get_facets() }
         # This "query" is the dictionary of rules, conditions, etc. (see build_query)
+        
+        if 'selected_facets' not in self.search_object.keys():
+            self.search_object['query'] = self.initial_facet_query()
         query = self.search_object.get('query')
 
         # Build the actual query that will be applied via post_filter
@@ -1334,7 +1380,6 @@ class AdvancedSeekerView(SeekerView):
             'use_wordwrap_header': self.use_wordwrap_header,
         }
         self.modify_results_context(context)
-
         json_response = {
             'filters': [facet.build_filter_dict(aggregation_results) for facet in facet_lookup.values()], # Relies on the default 'apply_aggregations' being applied.
             'table_html': loader.render_to_string(self.results_template, context, request=self.request),
