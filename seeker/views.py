@@ -1243,6 +1243,35 @@ class AdvancedSeekerView(SeekerView):
         else:
             return HttpResponseBadRequest("This endpoint only accepts AJAX requests.")
         
+    def initial_terms_facet(self, real_facet):
+        facet_query = {'condition': real_facet.filter_operator.upper(), 'rules': []}
+        for val in self.initial_facets[real_facet.field]:
+            rule = {
+                'id': real_facet.field,
+                'operator': 'equal',
+                'value': val}
+            facet_query['rules'].append(rule)
+        return facet_query
+    
+    def initial_range_filter(self, real_facet):
+        if 'operator' in self.initial_facets[real_facet.field].keys():
+            operator = self.initial_facets[real_facet.field].pop('operator')
+        else:
+            operator = 'between'
+        rule = {
+            'id': real_facet.field,
+            'operator': operator,
+            'value': self.initial_facets[real_facet.field]}
+        return rule
+    
+    def initial_text_facet(self, real_facet):
+        facet_query = {'condition': 'OR',
+                   'rules': [{
+                       'id': real_facet.field,
+                       'operator': 'equal',
+                       'value': self.initial_facets[real_facet.field]}]}
+        return facet_query
+
     def initial_facet_query(self):
         facets = {}
         # Iterate over each facet
@@ -1250,39 +1279,17 @@ class AdvancedSeekerView(SeekerView):
             fake_query = {'condition': self.initial_facets['condition'], 'rules': []}
         else:
             fake_query = {'condition': 'AND', 'rules': [] }
-        for fake_facet in self.initial_facets:
-            for real_facet in self.get_facets():
-                if fake_facet == real_facet.field:
-                    self.search_object.setdefault('selected_facets',[]).append(real_facet.field)
-                    if isinstance(real_facet, TermsFacet):
-                        facet_query = {'condition': real_facet.filter_operator.upper(), 'rules': []}
-                        if self.initial_facets[fake_facet]:
-                            for val in self.initial_facets[fake_facet]:
-                                rule = {
-                                    'id': real_facet.field,
-                                    'operator': 'equal',
-                                    'value': val}
-                                facet_query['rules'].append(rule)
-                            fake_query['rules'].append(facet_query)
-                    elif isinstance(real_facet, RangeFilter):
-                        if self.initial_facets[fake_facet]:
-                            if 'operator' in self.initial_facets[fake_facet].keys():
-                                operator = self.initial_facets[fake_facet].pop('operator')
-                            else:
-                                operator = 'between'
-                            rule = {
-                                'id': real_facet.field,
-                                'operator': operator,
-                                'value': self.initial_facets[fake_facet]}
-                            fake_query['rules'].append(rule)
-                    elif isinstance(real_facet, TextFacet):
-                        if self.initial_facets[fake_facet]:
-                            facet_query = {'condition': 'OR',
-                                           'rules': [{
-                                               'id': real_facet.field,
-                                               'operator': 'equal',
-                                               'value': self.initial_facets[fake_facet]}]}
-                            fake_query['rules'].append(facet_query)
+        for real_facet in self.get_facets():
+            if real_facet.field in self.initial_facets:
+                self.search_object.setdefault('selected_facets',[]).append(real_facet.field)
+                if isinstance(real_facet, TermsFacet):
+                    fake_query['rules'].append(self.initial_terms_facet(real_facet))
+                elif isinstance(real_facet, RangeFilter):
+                    if self.initial_facets[real_facet.field]:
+                        fake_query['rules'].append(self.initial_range_filter(real_facet))
+                elif isinstance(real_facet, TextFacet):
+                    if self.initial_facets[real_facet.field]:
+                        fake_query['rules'].append(self.initial_text_facet(real_facet))
         return fake_query
 
     def render_results(self, export):
@@ -1292,6 +1299,7 @@ class AdvancedSeekerView(SeekerView):
         if 'selected_facets' not in self.search_object.keys():
             self.search_object['query'] = self.initial_facet_query()
         query = self.search_object.get('query')
+        print(query)
 
         # Build the actual query that will be applied via post_filter
         advanced_query, facets_searched = self.build_query(query, facet_lookup)
